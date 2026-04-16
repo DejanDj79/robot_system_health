@@ -294,10 +294,6 @@ def build_services(
         row.setdefault("expected_servers", [])
         row.setdefault("expected_clients", [])
         row.setdefault("externally_provided", False)
-        row.setdefault("probe_call", False)
-        row.setdefault("probe_timeout_sec", None)
-        row.setdefault("probe_interval_sec", None)
-        row.setdefault("probe_request", {})
         by_name[name] = row
 
     if include_runtime_only:
@@ -314,10 +310,6 @@ def build_services(
                 "externally_provided": True,
                 "runtime_observed": True,
                 "condition": "runtime_only",
-                "probe_call": False,
-                "probe_timeout_sec": None,
-                "probe_interval_sec": None,
-                "probe_request": {},
             }
 
     return sorted(by_name.values(), key=lambda x: x.get("name", ""))

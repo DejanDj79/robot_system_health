@@ -97,6 +97,21 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y", "on"):
+        return True
+    if text in ("false", "0", "no", "n", "off"):
+        return False
+    if text == "auto":
+        return default
+    return bool(value)
+
+
 def _as_name_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -160,6 +175,7 @@ class SystemHealthMonitor(Node):
         self.declare_parameter("startup_grace_sec", 8.0)
         self.declare_parameter("diagnostics_ns", "/system_health")
         self.declare_parameter("service_probe_default_interval_sec", 5.0)
+        self.declare_parameter("auto_probe_critical_services", True)
 
         self.config_file = str(self.get_parameter("config_file").value or "").strip()
         self.check_period_sec = float(self.get_parameter("check_period_sec").value)
@@ -167,6 +183,9 @@ class SystemHealthMonitor(Node):
         self.diagnostics_ns = str(self.get_parameter("diagnostics_ns").value or "/system_health").strip("/")
         self.service_probe_default_interval_sec = float(
             self.get_parameter("service_probe_default_interval_sec").value
+        )
+        self.auto_probe_critical_services = bool(
+            self.get_parameter("auto_probe_critical_services").value
         )
 
         if not self.config_file:
@@ -410,7 +429,8 @@ class SystemHealthMonitor(Node):
             expected_types = [str(t) for t in expected_types if str(t)]
             expected_servers = _as_name_list(spec.get("expected_servers"))
             expected_clients = _as_name_list(spec.get("expected_clients"))
-            probe_call = bool(spec.get("probe_call", False))
+            probe_default = critical and self.auto_probe_critical_services
+            probe_call = _as_bool(spec.get("probe_call"), default=probe_default)
             probe_timeout_sec = _as_float(spec.get("probe_timeout_sec"))
             if probe_timeout_sec is None:
                 probe_timeout_sec = _as_float(spec.get("timeout_sec"))
@@ -443,6 +463,9 @@ class SystemHealthMonitor(Node):
 
             probe_details: dict[str, Any] = {
                 "probe_call": probe_call,
+                "probe_call_mode": (
+                    "explicit" if spec.get("probe_call") is not None else "auto_critical_default"
+                ),
                 "probe_timeout_sec": probe_timeout_sec,
                 "probe_interval_sec": probe_interval_sec,
             }

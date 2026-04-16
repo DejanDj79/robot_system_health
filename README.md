@@ -90,7 +90,7 @@ Checks are driven by entries in `health_template.nodes/topics/services` from the
 - Services:
   - service exists in graph (`service is present`)
   - service type match (`service type mismatch`)
-  - optional active probe call (`probe_call: true`) with timeout/error reason
+  - optional/automatic active probe call with timeout/error reason
 
 Severity rule:
 
@@ -115,7 +115,8 @@ Optional active service probe failures can also show:
 
 ## Optional Active Service Probe
 
-For critical services you can enable an actual service request probe (disabled by default):
+Critical services are actively probed by default (real service call).
+You can override per service with `probe_call: true/false`.
 
 ```yaml
 health_template:
@@ -123,7 +124,7 @@ health_template:
     - name: /my_critical_service
       critical: true
       types: [std_srvs/srv/Trigger]
-      probe_call: true
+      probe_call: true   # optional; critical services auto-probe even if omitted
       probe_timeout_sec: 1.0
       probe_interval_sec: 5.0
       probe_request: {}
@@ -131,7 +132,9 @@ health_template:
 
 Notes:
 
-- `probe_call` is optional and defaults to `false`.
+- default behavior:
+  - `critical: true` -> probe ON (unless `probe_call: false`)
+  - `critical: false` -> probe OFF (unless `probe_call: true`)
 - `probe_request` is a key/value map for request fields.
 - If probe is enabled and service stops responding, check becomes `WARN/ERROR` with reason.
 
