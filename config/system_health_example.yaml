@@ -1,0 +1,23 @@
+version: 1
+scenario: example
+description: Example health contract for system_health_monitor.
+
+health_template:
+  nodes:
+    - name: /example_node
+      critical: true
+      condition: always
+
+  topics:
+    - name: /example_topic
+      critical: false
+      min_rate_hz: null
+      max_age_sec: null
+      types: [std_msgs/msg/String]
+
+  services:
+    - name: /example_service
+      critical: false
+      timeout_sec: 1.0
+      types: [std_srvs/srv/Trigger]
+
