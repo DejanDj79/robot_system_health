@@ -97,6 +97,27 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _as_name_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = [str(v) for v in value]
+    else:
+        return []
+    out: list[str] = []
+    for raw in raw_items:
+        name = _normalize_name(str(raw).strip())
+        if not name:
+            continue
+        if name.startswith("<dynamic:"):
+            continue
+        if name not in out:
+            out.append(name)
+    return out
+
+
 @dataclass
 class TopicMetric:
     stamps: deque[float] = field(default_factory=lambda: deque(maxlen=64))
@@ -282,6 +303,8 @@ class SystemHealthMonitor(Node):
             if isinstance(expected_types, str):
                 expected_types = [expected_types]
             expected_types = [str(t) for t in expected_types if str(t)]
+            expected_publishers = _as_name_list(spec.get("expected_publishers"))
+            expected_subscribers = _as_name_list(spec.get("expected_subscribers"))
 
             exists = name in topic_map
             actual_types = topic_map.get(name, [])
@@ -346,6 +369,8 @@ class SystemHealthMonitor(Node):
                         "actual_types": actual_types,
                         "min_rate_hz": min_rate_hz,
                         "max_age_sec": max_age_sec,
+                        "expected_publishers": expected_publishers,
+                        "expected_subscribers": expected_subscribers,
                     },
                 )
             )
@@ -365,6 +390,8 @@ class SystemHealthMonitor(Node):
             if isinstance(expected_types, str):
                 expected_types = [expected_types]
             expected_types = [str(t) for t in expected_types if str(t)]
+            expected_servers = _as_name_list(spec.get("expected_servers"))
+            expected_clients = _as_name_list(spec.get("expected_clients"))
 
             exists = name in service_map
             actual_types = service_map.get(name, [])
@@ -389,10 +416,44 @@ class SystemHealthMonitor(Node):
                     message=msg,
                     category="services",
                     critical=critical,
-                    details={"expected_types": expected_types, "actual_types": actual_types},
+                    details={
+                        "expected_types": expected_types,
+                        "actual_types": actual_types,
+                        "expected_servers": expected_servers,
+                        "expected_clients": expected_clients,
+                    },
                 )
             )
         return results
+
+    def _annotate_root_causes(self, checks: list[CheckResult]) -> None:
+        failing_nodes = {
+            c.name
+            for c in checks
+            if c.category == "nodes" and c.level >= DiagnosticStatus.WARN and "not found in graph" in c.message
+        }
+        for c in checks:
+            if c.level == DiagnosticStatus.OK:
+                continue
+            if c.category == "nodes":
+                c.details["root_cause"] = True
+                c.details["caused_by"] = []
+                continue
+            if c.category == "topics":
+                deps = _as_name_list(c.details.get("expected_publishers"))
+            elif c.category == "services":
+                deps = _as_name_list(c.details.get("expected_servers"))
+            else:
+                deps = []
+            caused_by = sorted(n for n in deps if n in failing_nodes)
+            if caused_by:
+                c.details["root_cause"] = False
+                c.details["caused_by"] = caused_by
+                if "likely caused by missing node" not in c.message:
+                    c.message = f"{c.message}; likely caused by missing node(s): {', '.join(caused_by)}"
+            else:
+                c.details["root_cause"] = True
+                c.details["caused_by"] = []
 
     def _diag_status(self, result: CheckResult) -> DiagnosticStatus:
         status = DiagnosticStatus()
@@ -448,6 +509,7 @@ class SystemHealthMonitor(Node):
             checks.extend(self._node_checks(active_nodes))
             checks.extend(self._topic_checks(topic_map))
             checks.extend(self._service_checks(service_map))
+            self._annotate_root_causes(checks)
 
             critical_failures = [
                 c for c in checks if c.critical and c.level >= DiagnosticStatus.ERROR

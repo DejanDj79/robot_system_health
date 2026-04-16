@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import sys
 import time
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ class HealthRow:
     target: str
     level: int
     message: str
+    details: dict[str, str]
 
 
 ANSI_RESET = "\033[0m"
@@ -87,7 +89,8 @@ def _parse_statuses(diag: DiagnosticArray, prefix: str) -> tuple[DiagnosticStatu
                 target = "/" + tail if tail else "/"
                 break
 
-        rows.append(HealthRow(category=cat, target=target, level=status.level, message=status.message))
+        details = {str(kv.key): str(kv.value) for kv in status.values}
+        rows.append(HealthRow(category=cat, target=target, level=status.level, message=status.message, details=details))
 
     order = {"node": 0, "topic": 1, "service": 2, "other": 3}
     rows.sort(key=lambda r: (order.get(r.category, 99), r.target))
@@ -104,6 +107,46 @@ def _summary_int(summary: DiagnosticStatus | None, key: str) -> int | None:
             except Exception:
                 return None
     return None
+
+
+def _parse_bool(text: str | None) -> bool | None:
+    if text is None:
+        return None
+    val = str(text).strip().lower()
+    if val in ("true", "1", "yes", "y"):
+        return True
+    if val in ("false", "0", "no", "n"):
+        return False
+    return None
+
+
+def _parse_list(text: str | None) -> list[str]:
+    if text is None:
+        return []
+    raw = str(text).strip()
+    if not raw:
+        return []
+    try:
+        value = ast.literal_eval(raw)
+        if isinstance(value, (list, tuple, set)):
+            return [str(x) for x in value if str(x).strip()]
+        return [str(value)]
+    except Exception:
+        pass
+    # Fallback for plain comma-separated text.
+    trimmed = raw.strip("[]")
+    return [x.strip().strip("'\"") for x in trimmed.split(",") if x.strip()]
+
+
+def _health_score_text(summary: DiagnosticStatus | None) -> str | None:
+    if summary is None:
+        return None
+    total = _summary_int(summary, "checks_total")
+    ok = _summary_int(summary, "ok")
+    if total is None or ok is None or total <= 0:
+        return None
+    pct = (ok * 100.0) / float(total)
+    return f"health-score {ok}/{total} OK ({pct:.1f}%)"
 
 
 def _print_runtime_counts(summary: DiagnosticStatus | None) -> None:
@@ -138,6 +181,38 @@ def _print_check_counts(rows: list[HealthRow], shown: int, only_problems: bool) 
         print(f"shown problems={shown}")
 
 
+def _print_root_cause_groups(rows: list[HealthRow], only_problems: bool, use_color: bool) -> None:
+    relevant = [r for r in rows if r.level != DiagnosticStatus.OK]
+    if not relevant:
+        return
+
+    roots: list[HealthRow] = []
+    deps: list[tuple[HealthRow, list[str]]] = []
+    for row in relevant:
+        root_cause = _parse_bool(row.details.get("root_cause"))
+        caused_by = _parse_list(row.details.get("caused_by"))
+        if root_cause is False and caused_by:
+            deps.append((row, caused_by))
+        else:
+            roots.append(row)
+
+    if roots:
+        print(_paint("root-causes:", "ERR", use_color, bold=True))
+        for row in roots:
+            print(f"  - {row.category} {row.target}: {row.message}")
+
+    if deps:
+        print(_paint("dependent-issues:", "WARN", use_color, bold=True))
+        for row, caused_by in deps:
+            print(
+                f"  - {row.category} {row.target}: {row.message} "
+                f"[caused_by: {', '.join(caused_by)}]"
+            )
+
+    if only_problems and not roots and not deps:
+        print("No root-cause/dependent groups found.")
+
+
 class SystemHealthCli(Node):
     def __init__(self, diagnostics_topic: str):
         super().__init__("system_health_cli")
@@ -161,6 +236,11 @@ def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool, use_c
         print(f"No '{prefix}/...' statuses found on /diagnostics yet.")
         return
 
+    score_text = _health_score_text(summary)
+    if score_text:
+        print(_paint(score_text, "OK", use_color, bold=True))
+
+    shown_rows: list[HealthRow] = []
     shown = 0
     for row in rows:
         if only_problems and row.level == DiagnosticStatus.OK:
@@ -175,13 +255,17 @@ def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool, use_c
         if row.level != DiagnosticStatus.OK:
             line += f"  ({row.message})"
         print(line)
+        shown_rows.append(row)
         shown += 1
 
     if shown == 0:
         print("No problematic items.")
 
+    _print_root_cause_groups(shown_rows, only_problems, use_color)
     _print_check_counts(rows, shown, only_problems)
     _print_runtime_counts(summary)
+    if score_text:
+        print(_paint(score_text, "OK", use_color, bold=True))
     if summary is not None:
         summary_level = _level_str(summary.level)
         print(f"summary {_paint(summary_level, summary_level, use_color, bold=True)}: {summary.message}")

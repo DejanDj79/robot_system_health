@@ -126,6 +126,13 @@ At the end of CLI report you also get runtime counts summary:
 - `topics:user=...,system=...,total=...`
 - `services:user=...,system=...,total=...`
 
+CLI also prints:
+
+- `health-score X/Y OK (Z%)` at top and bottom of the report
+- grouped problem sections:
+  - `root-causes:` primary failing checks
+  - `dependent-issues:` checks likely failing as a consequence (for example missing topic/service because producer/server node is missing)
+
 ## ROS1 + ROS2 Bridge Notes
 
 - This package observes only the ROS2 graph.
