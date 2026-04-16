@@ -65,6 +65,15 @@ ros2 run system_health_tools system_health_cli --watch --clear
 ros2 run system_health_tools system_health_cli --watch --clear --only-problems
 ```
 
+Include ROS system interfaces (optional):
+
+```bash
+ros2 run system_health_tools build_health \
+  --capture \
+  --expected ~/system_health/expected.yaml \
+  --include-system-interfaces
+```
+
 ## One-Command Operator Report
 
 If you use the helper script from workspace root:
@@ -78,6 +87,12 @@ then one-shot full report is:
 ```
 
 This starts a temporary monitor, prints full checklist (`OK/WARN/ERROR`), then stops it.
+
+At the end of CLI report you also get runtime counts summary:
+
+- `nodes:user=...,system=...,total=...`
+- `topics:user=...,system=...,total=...`
+- `services:user=...,system=...,total=...`
 
 ## ROS1 + ROS2 Bridge Notes
 

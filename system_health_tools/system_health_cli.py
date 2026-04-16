@@ -69,6 +69,40 @@ def _parse_statuses(diag: DiagnosticArray, prefix: str) -> tuple[DiagnosticStatu
     return summary, rows
 
 
+def _summary_int(summary: DiagnosticStatus | None, key: str) -> int | None:
+    if summary is None:
+        return None
+    for kv in summary.values:
+        if kv.key == key:
+            try:
+                return int(str(kv.value))
+            except Exception:
+                return None
+    return None
+
+
+def _print_runtime_counts(summary: DiagnosticStatus | None) -> None:
+    n_user = _summary_int(summary, "runtime_nodes_user")
+    n_sys = _summary_int(summary, "runtime_nodes_system")
+    n_total = _summary_int(summary, "runtime_nodes_total")
+    t_user = _summary_int(summary, "runtime_topics_user")
+    t_sys = _summary_int(summary, "runtime_topics_system")
+    t_total = _summary_int(summary, "runtime_topics_total")
+    s_user = _summary_int(summary, "runtime_services_user")
+    s_sys = _summary_int(summary, "runtime_services_system")
+    s_total = _summary_int(summary, "runtime_services_total")
+
+    if None in (n_user, n_sys, n_total, t_user, t_sys, t_total, s_user, s_sys, s_total):
+        return
+
+    print(
+        "counts "
+        f"nodes:user={n_user},system={n_sys},total={n_total}  "
+        f"topics:user={t_user},system={t_sys},total={t_total}  "
+        f"services:user={s_user},system={s_sys},total={s_total}"
+    )
+
+
 class SystemHealthCli(Node):
     def __init__(self, diagnostics_topic: str):
         super().__init__("system_health_cli")
@@ -111,6 +145,8 @@ def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool) -> No
 
     if shown == 0:
         print("No problematic items.")
+
+    _print_runtime_counts(summary)
 
 
 def _parse_cli(argv: list[str]) -> argparse.Namespace:

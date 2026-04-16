@@ -74,14 +74,22 @@ def split_types(raw: str) -> list[str]:
     return [x.strip() for x in text.split(",") if x.strip()]
 
 
-def parse_nodes_file(path: Path) -> set[str]:
+def is_system_node(name: str) -> bool:
+    return any(name.startswith(prefix) for prefix in IGNORED_NODE_PREFIXES)
+
+
+def is_system_topic(name: str) -> bool:
+    return name in IGNORED_TOPICS
+
+
+def parse_nodes_file(path: Path, include_system_nodes: bool = False) -> set[str]:
     nodes: set[str] = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or not line.startswith("/"):
             continue
         name = normalize_name(line.split()[0])
-        if any(name.startswith(prefix) for prefix in IGNORED_NODE_PREFIXES):
+        if not include_system_nodes and is_system_node(name):
             continue
         nodes.add(name)
     return nodes
@@ -119,17 +127,19 @@ def should_ignore_service(name: str) -> bool:
     return any(name.endswith(suffix) for suffix in IGNORED_SERVICE_SUFFIXES)
 
 
-def parse_services_file(path: Path) -> dict[str, list[str]]:
+def parse_services_file(path: Path, include_system_services: bool = False) -> dict[str, list[str]]:
     raw = parse_name_types_file(path)
     out: dict[str, list[str]] = {}
     for name, types in raw.items():
-        if should_ignore_service(name):
+        if not include_system_services and should_ignore_service(name):
             continue
         out[name] = types
     return out
 
 
-def parse_topics_file(path: Path) -> dict[str, list[str]]:
+def parse_topics_file(path: Path, include_system_topics: bool = False) -> dict[str, list[str]]:
+    if include_system_topics:
+        return parse_name_types_file(path)
     return parse_name_types_file(path, ignored_names=IGNORED_TOPICS)
 
 
@@ -346,6 +356,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not include runtime-only entries that are not present in expected YAML.",
     )
+    parser.add_argument(
+        "--include-system-interfaces",
+        action="store_true",
+        help="Include system ROS interfaces (/rosout, /parameter_events, parameter services, etc.) in runtime checks.",
+    )
     return parser.parse_args()
 
 
@@ -416,9 +431,9 @@ def main() -> int:
     expected_topics = health.get("topics", []) or []
     expected_services = health.get("services", []) or []
 
-    runtime_nodes = parse_nodes_file(nodes_file)
-    runtime_topics = parse_topics_file(topics_file)
-    runtime_services = parse_services_file(services_file)
+    runtime_nodes = parse_nodes_file(nodes_file, include_system_nodes=args.include_system_interfaces)
+    runtime_topics = parse_topics_file(topics_file, include_system_topics=args.include_system_interfaces)
+    runtime_services = parse_services_file(services_file, include_system_services=args.include_system_interfaces)
 
     include_runtime_only = not args.no_runtime_only
     final_yaml = {
@@ -435,9 +450,10 @@ def main() -> int:
             "source_topics_file": str(topics_file),
             "source_services_file": str(services_file),
             "include_runtime_only": include_runtime_only,
+            "include_system_interfaces": args.include_system_interfaces,
             "notes": [
                 "Runtime-only entries often include bridge-provided interfaces or external systems.",
-                "Parameter services and rosout/parameter_events are filtered out by default.",
+                "Parameter services and rosout/parameter_events are filtered by default unless --include-system-interfaces is set.",
                 "Treat critical flags as operational policy and tune them per scenario.",
             ],
         },

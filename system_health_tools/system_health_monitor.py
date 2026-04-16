@@ -24,6 +24,40 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from std_msgs.msg import Bool, String
 
 
+SYSTEM_TOPICS = {
+    "/parameter_events",
+    "/rosout",
+}
+
+SYSTEM_SERVICE_SUFFIXES = (
+    "/describe_parameters",
+    "/get_parameter_types",
+    "/get_parameters",
+    "/list_parameters",
+    "/set_parameters",
+    "/set_parameters_atomically",
+)
+
+SYSTEM_NODE_PREFIXES = (
+    "/_",
+    "/system_health_cli",
+)
+
+
+def _is_system_node(name: str) -> bool:
+    return any(name.startswith(prefix) for prefix in SYSTEM_NODE_PREFIXES)
+
+
+def _is_system_topic(name: str) -> bool:
+    return name in SYSTEM_TOPICS
+
+
+def _is_system_service(name: str) -> bool:
+    if name.startswith("/_"):
+        return True
+    return any(name.endswith(suffix) for suffix in SYSTEM_SERVICE_SUFFIXES)
+
+
 def _now_sec(node: Node) -> float:
     return node.get_clock().now().nanoseconds / 1e9
 
@@ -377,11 +411,38 @@ class SystemHealthMonitor(Node):
             status.values.append(kv)
         return status
 
+    def _runtime_interface_counts(
+        self,
+        active_nodes: set[str],
+        topic_map: dict[str, list[str]],
+        service_map: dict[str, list[str]],
+    ) -> dict[str, int]:
+        node_system = sum(1 for n in active_nodes if _is_system_node(n))
+        topic_system = sum(1 for n in topic_map if _is_system_topic(n))
+        service_system = sum(1 for n in service_map if _is_system_service(n))
+
+        node_total = len(active_nodes)
+        topic_total = len(topic_map)
+        service_total = len(service_map)
+
+        return {
+            "runtime_nodes_total": node_total,
+            "runtime_nodes_system": node_system,
+            "runtime_nodes_user": max(0, node_total - node_system),
+            "runtime_topics_total": topic_total,
+            "runtime_topics_system": topic_system,
+            "runtime_topics_user": max(0, topic_total - topic_system),
+            "runtime_services_total": service_total,
+            "runtime_services_system": service_system,
+            "runtime_services_user": max(0, service_total - service_system),
+        }
+
     def _tick(self) -> None:
         try:
             active_nodes = self._active_nodes()
             topic_map = self._topic_map()
             service_map = self._service_map()
+            runtime_counts = self._runtime_interface_counts(active_nodes, topic_map, service_map)
 
             checks: list[CheckResult] = []
             checks.extend(self._node_checks(active_nodes))
@@ -410,12 +471,14 @@ class SystemHealthMonitor(Node):
                 "system READY" if ready else f"critical failures: {len(critical_failures)}"
             )
             summary.hardware_id = "agar_system"
-            for key, value in {
+            summary_values = {
                 "checks_total": len(checks),
                 "ok": len(oks),
                 "warn": len(warns),
                 "critical_failures": len(critical_failures),
-            }.items():
+            }
+            summary_values.update(runtime_counts)
+            for key, value in summary_values.items():
                 kv = KeyValue()
                 kv.key = str(key)
                 kv.value = str(value)
@@ -455,4 +518,3 @@ def main(args: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-
