@@ -18,7 +18,7 @@ import yaml
 
 import rclpy
 from rclpy.node import Node
-from rosidl_runtime_py.utilities import get_message
+from rosidl_runtime_py.utilities import get_message, get_service
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from std_msgs.msg import Bool, String
@@ -138,6 +138,19 @@ class CheckResult:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class ServiceProbeMetric:
+    client: Any | None = None
+    request_cls: Any | None = None
+    service_type: str | None = None
+    pending_future: Any | None = None
+    pending_since: float | None = None
+    last_probe_start: float | None = None
+    last_ok_time: float | None = None
+    last_error_time: float | None = None
+    last_error: str | None = None
+
+
 class SystemHealthMonitor(Node):
     def __init__(self) -> None:
         super().__init__("system_health_monitor")
@@ -146,11 +159,15 @@ class SystemHealthMonitor(Node):
         self.declare_parameter("check_period_sec", 1.0)
         self.declare_parameter("startup_grace_sec", 8.0)
         self.declare_parameter("diagnostics_ns", "/system_health")
+        self.declare_parameter("service_probe_default_interval_sec", 5.0)
 
         self.config_file = str(self.get_parameter("config_file").value or "").strip()
         self.check_period_sec = float(self.get_parameter("check_period_sec").value)
         self.startup_grace_sec = float(self.get_parameter("startup_grace_sec").value)
         self.diagnostics_ns = str(self.get_parameter("diagnostics_ns").value or "/system_health").strip("/")
+        self.service_probe_default_interval_sec = float(
+            self.get_parameter("service_probe_default_interval_sec").value
+        )
 
         if not self.config_file:
             self.get_logger().fatal("Missing required parameter 'config_file'.")
@@ -170,6 +187,7 @@ class SystemHealthMonitor(Node):
 
         self.topic_metrics: dict[str, TopicMetric] = {}
         self.topic_subscriptions: dict[str, Any] = {}
+        self.service_probe_metrics: dict[str, ServiceProbeMetric] = {}
 
         self.timer = self.create_timer(self.check_period_sec, self._tick)
         self.get_logger().info(f"System health monitor started with config: {self.config_path}")
@@ -392,6 +410,20 @@ class SystemHealthMonitor(Node):
             expected_types = [str(t) for t in expected_types if str(t)]
             expected_servers = _as_name_list(spec.get("expected_servers"))
             expected_clients = _as_name_list(spec.get("expected_clients"))
+            probe_call = bool(spec.get("probe_call", False))
+            probe_timeout_sec = _as_float(spec.get("probe_timeout_sec"))
+            if probe_timeout_sec is None:
+                probe_timeout_sec = _as_float(spec.get("timeout_sec"))
+            if probe_timeout_sec is None:
+                probe_timeout_sec = 1.0
+            probe_interval_sec = _as_float(spec.get("probe_interval_sec"))
+            if probe_interval_sec is None:
+                probe_interval_sec = self.service_probe_default_interval_sec
+            probe_request = spec.get("probe_request")
+            if probe_request is None:
+                probe_request = {}
+            if not isinstance(probe_request, dict):
+                probe_request = {}
 
             exists = name in service_map
             actual_types = service_map.get(name, [])
@@ -409,6 +441,26 @@ class SystemHealthMonitor(Node):
                 level = DiagnosticStatus.OK
                 msg = "service is present"
 
+            probe_details: dict[str, Any] = {
+                "probe_call": probe_call,
+                "probe_timeout_sec": probe_timeout_sec,
+                "probe_interval_sec": probe_interval_sec,
+            }
+            if probe_call and exists and type_ok:
+                probe_level, probe_msg, probe_extra = self._service_probe_status(
+                    service_name=name,
+                    actual_types=actual_types,
+                    expected_types=expected_types,
+                    request_data=probe_request,
+                    timeout_sec=probe_timeout_sec,
+                    interval_sec=probe_interval_sec,
+                    critical=critical,
+                )
+                probe_details.update(probe_extra)
+                if probe_level > level:
+                    level = probe_level
+                    msg = probe_msg
+
             results.append(
                 CheckResult(
                     name=name,
@@ -421,10 +473,194 @@ class SystemHealthMonitor(Node):
                         "actual_types": actual_types,
                         "expected_servers": expected_servers,
                         "expected_clients": expected_clients,
+                        **probe_details,
                     },
                 )
             )
         return results
+
+    def _ensure_service_probe_client(
+        self,
+        service_name: str,
+        service_type: str,
+    ) -> tuple[ServiceProbeMetric, str | None]:
+        metric = self.service_probe_metrics.setdefault(service_name, ServiceProbeMetric())
+        if (
+            metric.client is not None
+            and metric.request_cls is not None
+            and metric.service_type == service_type
+        ):
+            return metric, None
+        try:
+            srv_cls = get_service(service_type)
+        except Exception as exc:
+            metric.last_error = f"cannot import service type {service_type}: {exc}"
+            metric.last_error_time = _now_sec(self)
+            return metric, metric.last_error
+        try:
+            metric.client = self.create_client(srv_cls, service_name)
+            metric.request_cls = srv_cls.Request
+            metric.service_type = service_type
+            metric.pending_future = None
+            metric.pending_since = None
+            return metric, None
+        except Exception as exc:
+            metric.last_error = f"failed creating service client for {service_name}: {exc}"
+            metric.last_error_time = _now_sec(self)
+            return metric, metric.last_error
+
+    def _build_probe_request(
+        self,
+        request_cls: Any,
+        request_data: dict[str, Any],
+    ) -> tuple[Any | None, str | None]:
+        try:
+            req = request_cls()
+        except Exception as exc:
+            return None, f"cannot create request object: {exc}"
+        for key, value in request_data.items():
+            if not hasattr(req, key):
+                return None, f"request has no field '{key}'"
+            try:
+                setattr(req, key, value)
+            except Exception as exc:
+                return None, f"invalid request field '{key}': {exc}"
+        return req, None
+
+    def _on_service_probe_done(self, service_name: str, future: Any) -> None:
+        metric = self.service_probe_metrics.get(service_name)
+        if metric is None:
+            return
+        metric.pending_future = None
+        metric.pending_since = None
+        now = _now_sec(self)
+        try:
+            future.result()
+            metric.last_ok_time = now
+            metric.last_error = None
+        except Exception as exc:
+            metric.last_error = f"service probe call failed: {exc}"
+            metric.last_error_time = now
+
+    def _service_probe_status(
+        self,
+        service_name: str,
+        actual_types: list[str],
+        expected_types: list[str],
+        request_data: dict[str, Any],
+        timeout_sec: float,
+        interval_sec: float,
+        critical: bool,
+    ) -> tuple[int, str, dict[str, Any]]:
+        details: dict[str, Any] = {}
+        now = _now_sec(self)
+        service_type = actual_types[0] if actual_types else (expected_types[0] if expected_types else "")
+        if not service_type:
+            return (
+                DiagnosticStatus.WARN,
+                "service probe skipped: unknown service type",
+                details,
+            )
+
+        metric, err = self._ensure_service_probe_client(service_name, service_type)
+        details["probe_service_type"] = service_type
+        if err is not None:
+            return (
+                DiagnosticStatus.ERROR if critical else DiagnosticStatus.WARN,
+                f"service probe setup failed: {err}",
+                details,
+            )
+
+        if metric.pending_future is not None and metric.pending_since is not None:
+            age = max(0.0, now - metric.pending_since)
+            details["probe_pending_age_sec"] = round(age, 3)
+            if age > timeout_sec:
+                try:
+                    metric.pending_future.cancel()
+                except Exception:
+                    pass
+                metric.pending_future = None
+                metric.pending_since = None
+                metric.last_error = f"service probe timeout: {age:.2f}s > {timeout_sec:.2f}s"
+                metric.last_error_time = now
+                return (
+                    DiagnosticStatus.ERROR if critical else DiagnosticStatus.WARN,
+                    metric.last_error,
+                    details,
+                )
+            return (
+                DiagnosticStatus.WARN,
+                f"service probe pending ({age:.2f}s)",
+                details,
+            )
+
+        due = metric.last_probe_start is None or (now - metric.last_probe_start) >= interval_sec
+        if due:
+            if not metric.client.service_is_ready():
+                metric.last_error = "service probe: client is not ready yet"
+                metric.last_error_time = now
+                return (
+                    DiagnosticStatus.ERROR if critical else DiagnosticStatus.WARN,
+                    metric.last_error,
+                    details,
+                )
+            req, req_err = self._build_probe_request(metric.request_cls, request_data)
+            if req_err is not None:
+                metric.last_error = f"service probe request invalid: {req_err}"
+                metric.last_error_time = now
+                return (
+                    DiagnosticStatus.ERROR if critical else DiagnosticStatus.WARN,
+                    metric.last_error,
+                    details,
+                )
+            try:
+                metric.last_probe_start = now
+                metric.pending_future = metric.client.call_async(req)
+                metric.pending_since = now
+                metric.pending_future.add_done_callback(
+                    lambda fut, svc=service_name: self._on_service_probe_done(svc, fut)
+                )
+            except Exception as exc:
+                metric.last_error = f"service probe call setup failed: {exc}"
+                metric.last_error_time = now
+                return (
+                    DiagnosticStatus.ERROR if critical else DiagnosticStatus.WARN,
+                    metric.last_error,
+                    details,
+                )
+            if metric.last_ok_time is None:
+                return (
+                    DiagnosticStatus.WARN,
+                    "service probe started; waiting first response",
+                    details,
+                )
+            age = max(0.0, now - metric.last_ok_time)
+            details["probe_last_ok_age_sec"] = round(age, 3)
+            return (
+                DiagnosticStatus.OK,
+                f"service is present; probe in progress (last ok {age:.2f}s ago)",
+                details,
+            )
+
+        if metric.last_ok_time is not None:
+            age = max(0.0, now - metric.last_ok_time)
+            details["probe_last_ok_age_sec"] = round(age, 3)
+            return (
+                DiagnosticStatus.OK,
+                "service is present; probe OK",
+                details,
+            )
+        if metric.last_error is not None:
+            return (
+                DiagnosticStatus.ERROR if critical else DiagnosticStatus.WARN,
+                metric.last_error,
+                details,
+            )
+        return (
+            DiagnosticStatus.WARN,
+            "service probe waiting first cycle",
+            details,
+        )
 
     def _annotate_root_causes(self, checks: list[CheckResult]) -> None:
         failing_nodes = {

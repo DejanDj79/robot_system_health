@@ -90,6 +90,7 @@ Checks are driven by entries in `health_template.nodes/topics/services` from the
 - Services:
   - service exists in graph (`service is present`)
   - service type match (`service type mismatch`)
+  - optional active probe call (`probe_call: true`) with timeout/error reason
 
 Severity rule:
 
@@ -105,6 +106,34 @@ Yes. In CLI output, non-OK rows include a reason in parentheses, for example:
 - `(... stale topic data: age=... > max_age_sec=...)`
 - `(... topic rate too low: ... < min_rate_hz=...)`
 - `(... service not found in graph)`
+
+Optional active service probe failures can also show:
+
+- `(... service probe timeout: ... > ... )`
+- `(... service probe call failed: ... )`
+- `(... service probe request invalid: ... )`
+
+## Optional Active Service Probe
+
+For critical services you can enable an actual service request probe (disabled by default):
+
+```yaml
+health_template:
+  services:
+    - name: /my_critical_service
+      critical: true
+      types: [std_srvs/srv/Trigger]
+      probe_call: true
+      probe_timeout_sec: 1.0
+      probe_interval_sec: 5.0
+      probe_request: {}
+```
+
+Notes:
+
+- `probe_call` is optional and defaults to `false`.
+- `probe_request` is a key/value map for request fields.
+- If probe is enabled and service stops responding, check becomes `WARN/ERROR` with reason.
 
 ## One-Command Operator Report
 

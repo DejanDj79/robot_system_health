@@ -20,4 +20,7 @@ health_template:
       critical: false
       timeout_sec: 1.0
       types: [std_srvs/srv/Trigger]
-
+      probe_call: false
+      probe_timeout_sec: 1.0
+      probe_interval_sec: 5.0
+      probe_request: {}
