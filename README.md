@@ -138,19 +138,29 @@ Notes:
 - `probe_request` is a key/value map for request fields.
 - If probe is enabled and service stops responding, check becomes `WARN/ERROR` with reason.
 
-## One-Command Operator Report
+## Helper Scripts (Included In Repo)
 
-If you use the helper script from workspace root:
+The repository also ships helper scripts under `scripts/`:
 
 - `scripts/system_health.sh`
+  - robot-side helper (`report`, `report-all`, `runtime-both`, `monitor`, ...)
+- `scripts/deploy_system_health_ssh.sh`
+  - laptop-side deploy helper (sync package + optional build/generate on robot)
 
-then one-shot full report is:
+Typical usage:
 
 ```bash
+# on robot
 ~/system_health.sh report
+~/system_health.sh report-all
 ```
 
-This starts a temporary monitor, prints full checklist (`OK/WARN/ERROR`), then stops it.
+```bash
+# on laptop
+./scripts/deploy_system_health_ssh.sh --host <user@robot_ip> --remote-ws <robot_ws_path>
+```
+
+`report` starts a temporary monitor, prints full checklist (`OK/WARN/ERROR`), then stops it.
 
 At the end of CLI report you also get runtime counts summary:
 
