@@ -103,6 +103,16 @@ def _print_runtime_counts(summary: DiagnosticStatus | None) -> None:
     )
 
 
+def _print_check_counts(rows: list[HealthRow], shown: int, only_problems: bool) -> None:
+    node_count = sum(1 for r in rows if r.category == "node")
+    topic_count = sum(1 for r in rows if r.category == "topic")
+    service_count = sum(1 for r in rows if r.category == "service")
+    total = len(rows)
+    print(f"checks nodes={node_count} topics={topic_count} services={service_count} total={total}")
+    if only_problems:
+        print(f"shown problems={shown}")
+
+
 class SystemHealthCli(Node):
     def __init__(self, diagnostics_topic: str):
         super().__init__("system_health_cli")
@@ -126,11 +136,6 @@ def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool) -> No
         print(f"No '{prefix}/...' statuses found on /diagnostics yet.")
         return
 
-    if summary is not None:
-        print(f"summary { _level_str(summary.level) }: {summary.message}")
-    else:
-        print("summary: (not found)")
-
     shown = 0
     for row in rows:
         if only_problems and row.level == DiagnosticStatus.OK:
@@ -146,7 +151,12 @@ def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool) -> No
     if shown == 0:
         print("No problematic items.")
 
+    _print_check_counts(rows, shown, only_problems)
     _print_runtime_counts(summary)
+    if summary is not None:
+        print(f"summary {_level_str(summary.level)}: {summary.message}")
+    else:
+        print("summary: (not found)")
 
 
 def _parse_cli(argv: list[str]) -> argparse.Namespace:
