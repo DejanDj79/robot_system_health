@@ -63,6 +63,7 @@ Useful CLI modes:
 ```bash
 ros2 run system_health_tools system_health_cli --watch --clear
 ros2 run system_health_tools system_health_cli --watch --clear --only-problems
+ros2 run system_health_tools system_health_cli --no-color
 ```
 
 Include ROS system interfaces (optional):

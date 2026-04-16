@@ -23,6 +23,31 @@ class HealthRow:
     message: str
 
 
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_COLORS = {
+    "node": "\033[36m",      # cyan
+    "topic": "\033[33m",     # yellow
+    "service": "\033[32m",   # green
+    "other": "\033[37m",     # light gray
+    "OK": "\033[32m",        # green
+    "WARN": "\033[33m",      # yellow
+    "ERR": "\033[31m",       # red
+    "STALE": "\033[35m",     # magenta
+    "UNK": "\033[37m",       # light gray
+}
+
+
+def _paint(text: str, color_key: str, enabled: bool, bold: bool = False) -> str:
+    if not enabled:
+        return text
+    color = ANSI_COLORS.get(color_key, "")
+    if not color:
+        return text
+    style = ANSI_BOLD if bold else ""
+    return f"{style}{color}{text}{ANSI_RESET}"
+
+
 def _level_str(level: int) -> str:
     if level == DiagnosticStatus.OK:
         return "OK"
@@ -130,7 +155,7 @@ class SystemHealthCli(Node):
         self.msg_count += 1
 
 
-def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool) -> None:
+def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool, use_color: bool) -> None:
     summary, rows = _parse_statuses(diag, prefix)
     if summary is None and not rows:
         print(f"No '{prefix}/...' statuses found on /diagnostics yet.")
@@ -140,9 +165,13 @@ def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool) -> No
     for row in rows:
         if only_problems and row.level == DiagnosticStatus.OK:
             continue
-        left = f"{row.category} {row.target}"
-        right = _level_str(row.level)
-        line = _dot_line(left, right)
+        left_plain = f"{row.category} {row.target}"
+        right_plain = _level_str(row.level)
+        line = _dot_line(left_plain, right_plain)
+        cat_colored = _paint(row.category, row.category, use_color, bold=True)
+        right_colored = _paint(right_plain, right_plain, use_color, bold=True)
+        line = line.replace(row.category, cat_colored, 1)
+        line = line[: -len(right_plain)] + right_colored
         if row.level != DiagnosticStatus.OK:
             line += f"  ({row.message})"
         print(line)
@@ -154,7 +183,8 @@ def _print_report(diag: DiagnosticArray, prefix: str, only_problems: bool) -> No
     _print_check_counts(rows, shown, only_problems)
     _print_runtime_counts(summary)
     if summary is not None:
-        print(f"summary {_level_str(summary.level)}: {summary.message}")
+        summary_level = _level_str(summary.level)
+        print(f"summary {_paint(summary_level, summary_level, use_color, bold=True)}: {summary.message}")
     else:
         print("summary: (not found)")
 
@@ -168,12 +198,14 @@ def _parse_cli(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--watch", action="store_true", help="Keep printing on every new diagnostics update")
     parser.add_argument("--only-problems", action="store_true", help="Show only WARN/ERR/STALE items")
     parser.add_argument("--clear", action="store_true", help="Clear terminal before each watch refresh")
+    parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors in output")
     return parser.parse_args(cleaned[1:])
 
 
 def main(args: list[str] | None = None) -> int:
     argv = list(sys.argv if args is None else args)
     cli = _parse_cli(argv)
+    use_color = (not cli.no_color) and sys.stdout.isatty()
 
     rclpy.init(args=argv)
     node = SystemHealthCli(cli.diagnostics_topic)
@@ -203,12 +235,12 @@ def main(args: list[str] | None = None) -> int:
                 if node.msg_count != last_count:
                     if cli.clear:
                         print("\033[2J\033[H", end="")
-                    _print_report(node.latest, cli.prefix.strip("/"), cli.only_problems)
+                    _print_report(node.latest, cli.prefix.strip("/"), cli.only_problems, use_color)
                     print("")
                     last_count = node.msg_count
                 continue
 
-            _print_report(node.latest, cli.prefix.strip("/"), cli.only_problems)
+            _print_report(node.latest, cli.prefix.strip("/"), cli.only_problems, use_color)
             return 0
     finally:
         node.destroy_node()
